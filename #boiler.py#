@@ -1,0 +1,820 @@
+import stripe, oauthlib, requests, psycopg2, datetime, os, json, sys
+from flask_oauth import OAuth
+from flask import Flask, render_template, abort, make_response, request, redirect
+from flask.ext.sqlalchemy import SQLAlchemy
+#from flask.ext.social import social
+#from flask.ext.social.datastore import SQLALChemyConnectionDatastore
+from kickstart import *
+from campModels import *
+from userModels import *
+from userForms import *
+from flask.ext.uploads import *
+from sqlalchemy_searchable import search as search_campgrounds
+from flask.ext.mail import Mail, Message
+from flaskext.uploads import (UploadSet, configure_uploads, IMAGES,
+                              UploadNotAllowed)
+"""
+RoverPass is a simple aggregation site for RV campgrounds across the nation, offering a 40% discount on thousands.
+"""
+### SECURITY ###
+user_datastore = SQLAlchemyUserDatastore(db, User, Role)
+user_datastore.create_role(name='base_user', description='This user is allowed to leave a review and upload content.')
+user_datastore.create_role(name='sales_user', description='Allows Sales team to access directory of campgrounds & verification codes')
+user_datastore.create_role(name='campground_owner', description='This user can edit a campgrounds content, and opt-in to Roverpass')
+app_security = Security(app, user_datastore)
+principals = Principal(app)
+
+#handle file uploads using flask-uploads
+#http://pythonhosted.org/Flask-Uploads/
+photos = UploadSet('photos', IMAGES)
+app.config['UPLOADED_PHOTOS_DEST'] = '/var/www/roverpass/roverpass/static/photos/'
+configure_uploads(app, (photos))
+
+#MAIL using flask-mail
+#http://pythonhosted.org/flask-mail/
+sys.stdout = sys.stderr
+app.config.update(
+    #EMAIL SETTINGS
+    MAIL_SERVER='smtp.gmail.com',
+    MAIL_PORT=465,
+    MAIL_USE_SSL=True,
+    MAIL_USERNAME = 'ian.seyer@gmail.com',
+    MAIL_PASSWORD = 'F88aloquick!',
+    DEFAULT_MAIL_SENDER = 'info@roverpass.com',
+    SECURITY_POST_LOGIN_VIEW='/login_success')
+
+mail = Mail(app)
+
+FACEBOOK_APP_ID = '1498934676996386'
+FACEBOOK_APP_SECRET = '3b89f94bb85ae16093bcc550fc9e5b99'
+
+oauth = OAuth()
+
+facebook = oauth.remote_app('facebook',
+    base_url='https://graph.facebook.com/',
+    request_token_url=None,
+    access_token_url='/oauth/access_token',
+    authorize_url='https://www.facebook.com/dialog/oauth',
+    consumer_key=FACEBOOK_APP_ID,
+    consumer_secret=FACEBOOK_APP_SECRET,
+    request_token_params={'scope': ('email, ')}
+)
+
+twitter = oauth.remote_app('twitter',
+    base_url='https://api.twitter.com/1/',
+    request_token_url='https://api.twitter.com/oauth/request_token',
+    access_token_url='https://api.twitter.com/oauth/access_token',
+    authorize_url='https://api.twitter.com/oauth/authenticate',
+    consumer_key='HXy7JHIBI5kIpfRRPnq0EWlYp',
+    consumer_secret='LAto3gGXRXwJzD4aKSbMVTs3LuI41GgKKcSIutSnZi5F7Uk4sn'
+)
+
+#create_role commits automatically
+#db.session.commit()
+
+#create permissions here:
+access_sales = Permission(RoleNeed('sales_user'))
+edit_campground = Permission(RoleNeed('sales_user'), RoleNeed('campground_owner'))
+upload_media = Permission(RoleNeed('sales_user'), RoleNeed('campground_owner'), RoleNeed('base_user'))
+leave_review = Permission(RoleNeed('base_user'))
+
+### SOCIAL ###
+#Social(app, SQLALChemyConnectionDatastore(db, Connection))
+
+
+### STRIPE ###
+stripe_keys = {
+    'secret_key': 'sk_test_WfMEMY5PfzRdZxPGZY0Y6OHb',
+    'publishable_key': 'pk_test_U1ixVDxDxTHofvHYsEebpE7X'
+}
+
+stripe.api_key = stripe_keys['secret_key']
+
+
+@app_security.login_context_processor
+def login_context_processor():
+    form = LoginForm()
+    return dict(form=form)
+
+# LOGIN #
+@login_manager.user_loader
+def load_user(id):
+    try:
+        user = User.objects.filter_by(id=id).first()
+        return user
+    except:
+        return AnonymousUser
+
+@login_manager.request_loader
+def load_user_from_request(request):
+    #try to login with api (request.args.get('api_key'))
+    #then try to login with normal email
+    pass
+
+@app.route('/') 
+def index():
+    """
+    Displays the splash page, along with any messages passed along.
+    If you are going to redirect to this page, you pass a message.
+    """
+    if current_user.is_authenticated():
+        user = current_user
+    else:
+        user = None
+    try:
+        message = request.args['message']
+    except:
+        message = None
+
+    return render_template('splash.html', message=message, key=stripe_keys['publishable_key'], user=user)
+
+@app.route('/login_success')
+def login_success():
+    return render_template('splash.html', message='You have been logged in!')
+
+@facebook.tokengetter
+def get_facebook_token(token=None):
+    return session.get('facebook_token')
+
+@twitter.tokengetter
+def get_twitter_token(token=None):
+    if session.has_key('twitter_token'):
+        del session['twitter_token']
+    return session.get('twitter_token')
+
+def pop_login_session():
+    session.pop('logged_in', None)
+    session.pop('facebook_token', None)
+
+@app.route("/facebook_login")
+def facebook_login():
+
+    return facebook.authorize(callback=url_for('facebook_authorized',
+        next=request.args.get('next'), _external=True))
+
+@app.route("/twitter_login")
+def twitter_login():
+
+    return twitter.authorize(callback=url_for('twitter_authorized',
+        next=request.args.get('next') or request.referrer or None))
+
+@app.route("/facebook_authorized")
+@facebook.authorized_handler
+def facebook_authorized(resp):
+    if resp is None or 'access_token' not in resp:
+        return redirect(url_for('index', message='You decided not to login.'))
+
+
+    print request.args.has_key('error')
+    session['facebook_token'] = (resp['access_token'], '')
+
+    me = facebook.get('/me')
+    #error check to ensure user is found:
+    #return redirect(url_for('index', message=User.query.filter_by(email=me.data['email']).first().email))
+    if User.query.filter_by(email=me.data['email']).first() is not None:
+        login_user(User.query.filter_by(email=me.data['email']).first())
+    else:
+        user = User(email=me.data['email'], active=True, social_user=True)
+        db.session.add(user)
+        db.session.commit()
+        login_user(user)
+
+    return redirect(url_for('index'))
+
+@app.route('/twitter_authorized')
+@twitter.authorized_handler
+def twitter_authorized(resp):
+
+    if resp is None or 'oauth_token' not in resp:
+        return redirect(url_for('index', message='You decided not to login.'))
+
+    session['twitter_token'] = (
+        resp['oauth_token' ],
+        resp['oauth_token_secret']
+    )
+
+    #clear out junk. twitter will not like you if you don't do this
+
+    session['twitter_user'] = resp['screen_name']
+    if User.query.filter_by(twitter_handle=resp['screen_name']).first() is not None:
+        login_user(User.query.filter_by(twitter_handle=resp['screen_name']).first())
+    else:
+        user = User(twitter_handle=resp['screen_name'], active=True, social_user=True, email=None)
+        db.session.add(user)
+        db.session.commit()
+        login_user(user)
+
+    return redirect(url_for('index'))
+
+@app.route('/logout')
+def logout():
+    # Remove the user information from the session
+    logout_user()
+
+    pop_login_session()
+    # Remove session keys set by Flask-Principal
+    for key in ('identity.name', 'identity.auth_type'):
+        session.pop(key, None)
+
+    # Tell Flask-Principal the user is anonymous
+    identity_changed.send(current_app._get_current_object(),
+                          identity=AnonymousIdentity())
+
+    return redirect(request.args.get('next') or '/')
+
+# USERS #
+@app.route('/activate/<code>')
+def activate_user(code):
+    try:
+        user = User.query.filter_by(activation_code=code).first()
+    except:
+        user = None
+
+    if user == None:
+        return render_template('user_not_found.html')
+    elif user.active == True:
+        return redirect(url_for('index', message='This user has already been activated!'))
+    else:
+        user.active = True
+        db.session.commit()
+        login_user(user)
+        return redirect(url_for('index', message='Thank you. You have been logged in.'))
+
+@app.route('/resend_password', methods=['GET', 'POST'])
+def resend_password():
+    form = ResendPasswordForm()
+    if form.validate_on_submit():
+        try:
+            user = User.query.filter_by(email=form.email.data).first()
+        except:
+            user = None
+        print user
+        if user == None:
+            return render_template('notification.html', notice='Sorry, a user was not found with that email. Please call sales if you have any more questions.')
+        
+        else:
+            new_password= user.generate_new_password()
+            user.password = encrypt_password(new_password)
+            db.session.commit()
+            print new_password
+            print user.password
+
+            msg = Message('Your new Roverpass password', sender='info@roverpass.com', recipients=[user.email], html=render_template('emails/resend_password.html', user=user, new_password=new_password))
+            mail.send(msg)
+            return render_template('notification.html', notice='We have emailed you a new password.')
+    else:
+        return render_template('resend_password.html', form=form)
+
+@app.route('/profile/<email_slug>')
+def user_profile(email_slug):
+    try:
+        user = User.query.filter_by(email_slug=email_slug).first()
+    except:
+        return redirect(url_for('index', message='That user was not found.'))
+
+    if not current_user == user:
+        return redirect(url_for('index', message='You do not have access to that page.'))
+
+    if user == None:
+        return redirect(url_for('index', message='That user was not found.'))
+
+    return render_template('user_profile.html', user=user)
+
+@app.route('/profile/<email_slug>/change_password', methods=['GET', 'POST'])
+def change_password(email_slug):
+    form = ChangePasswordForm()
+    user = User.query.filter_by(email_slug=email_slug).first()
+    
+    if not current_user == user:
+        return redirect(url_for('index', message='You do not have access to that page.'))
+        
+    if form.validate_on_submit():
+        if verify_password(form.old_password.data, user.password):
+            user.password = encrypt_password(form.new_password.data)
+            db.session.commit()
+            return render_template('notification.html', notice='Your password has been updated.')
+        else:
+            return render_template('change_password.html', form=form, user=user, message='Incorrect old password. Please try again.')
+
+    else:
+        return render_template('change_password.html', user=user, form=form)
+
+@app.route('/campground/<slug>/create_owner', methods=['GET', 'POST'])
+def create_owner(slug):
+    form = UserForm()
+    campground = Campground.query.filter_by(slug=slug).first()
+    #if the user already owns the campground
+    if current_user.has_role('campground_owner') and current_user.camp_owned == campground.id:
+        return redirect('/campground/'+slug+'/opt_in')
+
+    if request.method=='POST' and form.validate():
+        if User.query.filter_by(email=form.email.data).first() == None:
+            user = user_datastore.create_user(email=form.email.data,
+                    password=encrypt_password(form.password.data),
+                    active=False, has_pass=False)
+            if not user.has_role('base_user'):
+                user_datastore.add_role_to_user(user, Role.query.filter_by(name='base_user').first())
+            user_datastore.add_role_to_user(user, Role.query.filter_by(name='campground_owner').first())
+            user.camp_owned = campground.id
+            user.generate_activation_code()
+            user.generate_email_slug()
+
+
+
+
+
+
+
+
+
+
+
+
+            db.session.commit()
+            msg = Message(subject='Welcome to Roverpass', sender='info@roverpass.com', recipients=[user.email], html=render_template('emails/user_activation.html', user=user, activation_code=user.activation_code))
+            mail.send(msg)
+            return render_template('notification.html', user=user, notice='Thank you for creating an account. An email has been sent to '+user.email+'. Please check it to activate your account.')
+        else:
+            return render_template('notification.html', notice='A user with that email already exists. Forgot your password? Click forgot password.')
+    else:
+        return render_template('create_owner.html', campground=campground, message="Thank you! Please create an account.", form=form)
+
+@app.route('/create_user', methods=['GET', 'POST'])
+def create_user():
+    print 'called!'
+    form = UserForm(prefix="user")
+    if request.method=='POST' and form.validate():
+        if User.query.filter_by(email = form.email.data).first() == None:
+            print 'creating user'
+            user = user_datastore.create_user(email=form.email.data,
+                        password=encrypt_password(form.password.data),
+                        active=False, has_pass=False)
+            user.generate_activation_code()
+            print 'generated activation code'
+            user.generate_email_slug()
+            print 'generated email slug'
+            db.session.commit()
+            print 'commited to db'  
+            print user.activation_code
+            msg = Message(subject='Welcome to Roverpass', sender='info@roverpass.com', recipients=[user.email], html=render_template('emails/user_activation.html', user=user, activation_code=user.activation_code))
+            mail.send(msg)
+            print 'mail sent!'
+            if not user.has_role('base_user'):
+                user_datastore.add_role_to_user(user, Role.query.filter_by(name='base_user').first())
+
+            return render_template('notification.html', notice='Thank you for creating an account. An email has been sent to '+user.email+'. Please check it to activate your account.')
+        else:
+            return render_template('notification.html', notice='A user with that email already exists. Have you forgotten your password? Click down below.')
+    else:
+        return render_template('create_user.html', user=None, form=form)
+
+@app.route('/add_roverpass', methods=['POST'])
+@login_required
+def add_roverpass():
+    """
+    Checks if a user already has an roverpass, then checks if it is expired. If the user does have an unexpired pass, it redirects to a "you already have one" page.
+    If it is expired, it redirects them to a renew page.
+    If neither, it charges their card and updates their DB profile with
+    has_pass = True
+    pass_purchase_date = datetime.today()
+    """
+    if current_user.has_pass and not current_user.pass_expired:
+        return render_template('pass_already.html', user=current_user)
+    elif not current_user.has_pass:
+        # Amount in cents
+        amount = 4000
+
+        customer = stripe.Customer.create(
+            email=request.form.email,
+            card=request.form.getlist('token[id]')[0]
+        )
+
+        try :
+            charge = stripe.Charge.create(
+            customer=customer.id,
+            amount=amount,
+            currency='usd',
+            description='Purchasing Roverpass Card',
+            )
+        except stripe.CardError, e:
+            return redirect(url_for('index', message='Card information incorrect. Please try again.'))
+
+        user = User.query.filter_by(id=current_user.id).first()
+        user.address=request.form.getlist('token[card][address_line1]')[0]
+        user.zip_code=request.form.getlist('token[card][address_zip]')[0]
+        user.city=request.form.getlist('token[card][address_city]')[0]
+        user.state=request.form.getlist('token[card][address_state]')[0]
+        user.has_pass = True
+        user.pass_purchase_date = datetime.today()
+
+        if user.email is None:
+            user.email = request.form['email']
+
+        db.session.commit()
+        msg = Message(subject=str('ROVERPASS SHIPPING NOTICE'), sender='info@roverpass.com', html=render_template('someone_bought_a_roverpass.html', today=datetime.today().strftime("%d %b, %Y"), email=request.form.email, address=user.address, zip_code=user.zip_code, city=user.city, state=user.state, user=user, campground=campground), recipients=['info@roverpass.com'])
+        mail.send(msg)
+        return render_template('pass_success.html', user = user, expiration_date = (user.pass_purchase_date + timedelta(days=365)).strftime("%d %b, %Y"))
+    return abort(500)
+
+# SEARCH #
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    """
+    Performs a search using sqlalchemy-searchable. Allows for refinement via perk selection.
+    """
+    form = SearchForm()
+    user = current_user
+    form.validate()
+    print form.errors
+    if request.method == 'POST' and form.validate():
+        #gather the selected perks
+        #due to wtforms not differentiating form fields (or at least providing a useful mechanism to do so),
+        #i iterate through every instance of a form field and brutally determine its type.
+        selected_perks = []
+        for perk in form:
+            #if it is not a boolean field, it is definitely not our guy,
+            #also, those other guys? not our guy.
+            if isinstance(perk.data, bool) and not perk.id == 'state' and not perk.id == 'roverpass_discount_only':
+                if perk.data:
+                    selected_perks.append(perk.id)
+        #list comprehension to properly format each perk in the list (makes a new list of spaced-out perk names)
+        selected_perks = [perk.replace('_', ' ').title() for perk in selected_perks]
+        proper = []
+
+        #query AND perk selection
+        #remember, python defaults an empty list None->False
+        #if it is this search, you must check and see that every perk of each campground is inside the list
+        #of selected perks using python's set object
+        if form.query.data and selected_perks:
+            results = Campground.query.search(form.query.data).all()
+            for campground in results:
+                perks_list = []
+                for perk in campground.perks:
+                    perks_list.append(perk.perk_name)
+                if set(selected_perks) <= set(perks_list):
+                    proper.append(campground)
+
+        #no query, only perks
+        if not form.query.data and selected_perks:
+            results = Campground.query.all()
+            for campground in results:
+                perks_list = []
+                for perk in campground.perks:
+                    perks_list.append(perk.perk_name)
+                print set(selected_perks) <= set(perks_list)
+                if  set(selected_perks) <= set(perks_list):
+                    proper.append(campground)
+
+        #query only, no perk selection
+        if form.query.data and not selected_perks:
+            proper = Campground.query.search(form.query.data).all()
+        
+        #neither
+        if not form.query.data and not selected_perks:
+            print 'this is true'
+            proper = Campground.query.all()[:50]
+
+        print proper
+        #if they selected a state
+        states_filter = []
+        if not form.state.data == 'None':
+            for result in proper:
+                if result.state == form.state.data:
+                    states_filter.append(result)
+        else:
+            states_filter = proper
+
+        #if they want only roverpass participants
+        roverpass_discount_filter = []
+        if form.roverpass_discount_only.data == True:
+            for result in states_filter:
+                if result.roverpass_member:
+                    roverpass_discount_filter.append(result)
+        else:
+            roverpass_discount_filter = states_filter
+
+        #due to SQLAlchemy storing tables as a proprietary data type, jinja cannot interpret the lists returned by, 
+        #in this case, campground.media. therefore, create a list of display images with paralell indices to their campground
+        media = [] #<-- URLs to the first image in campground.media
+        for camp in roverpass_discount_filter:
+            try:
+                media.append(str(camp.media[0].url))
+            except:
+                media.append('/static/media/travco.jpg')
+        return render_template('search.html', user=user, media=media, results=roverpass_discount_filter, form=form)
+
+    return render_template('search.html', user=user, form=form, results=None)
+
+# CAMPGROUND & REVIEWS #
+
+@app.route('/campground/<slug>', methods=['GET', 'POST'])
+def view_campground(slug):
+    """
+    Campground profile view. Redirects to AngularJS powered inline editing page if user has the permissions required to edit a campground page.
+    """
+
+    campground = Campground.query.filter_by(slug=slug).first()
+    if campground == None:
+        abort(404)
+
+    user = current_user
+    if current_user.has_role('campground_owner') and current_user.camp_owned == campground.id:
+        return redirect('/campground/'+slug+'/edit')
+    try:
+        address = json.loads(campground.address)['results'][0]['name']
+    except:
+        address = campground.address
+    try:
+        similar = Campground.query.filter_by(state=campground.state).all()
+        similar.remove(campground)
+    except:
+        similar = None
+    if len(campground.reviews) != 0:
+        total = 0
+        review_average = 0
+        for review in campground.reviews:
+            total += review.stars
+        review_average = total/(len(campground.reviews))
+        review = campground.reviews[len(campground.reviews)-1]
+    else:
+        review_average = 0
+        review = None
+
+    message = None
+    #calculate review average
+
+    if current_user.has_role('campground_owner') and current_user.camp_owned == campground.id:
+        return render_template('campground.html', user=user, campground=campground, 
+                                media=list(Media.query.filter_by(camp_id=campground.id).all()), 
+                                similar=similar, review=review, review_average=review_average, message=message, 
+                                name=campground.name)
+        #return redirect(url_for('edit_campground', slug=slug))
+    elif campground:
+        if request.args:
+            message = request.args['message']
+        else:
+            message = None
+
+        if user.is_anonymous():
+            user = None
+        return render_template('campground.html', user=user, campground=campground, 
+                                media=Media.query.filter_by(camp_id=campground.id).all(), 
+                                similar=similar, review=review, review_average=review_average, message=message, 
+                                name=str(campground.name).replace('{','').replace('"','').replace('}',''), 
+                                address=address)
+    return render_template('404.html')
+
+@app.route('/campground/<slug>/reviews')
+def display_reviews(slug):
+    """
+    Displays a list of all reviews for a campground.
+    """
+    campground = Campground.query.filter_by(slug=slug).first()
+    if campground:
+        return render_template('review_list.html', campground=campground, user=current_user, reviews=campground.reviews)
+    else:
+        abort(404)
+
+@app.route('/campground/<slug>/leave_review', methods=['GET', 'POST'])
+@login_required
+def leave_review(slug):
+    form = ReviewForm()
+    campground = Campground.query.filter_by(slug=slug).first()
+    if campground and form.validate():
+        campground.reviews.append(Review(stars=form.num_stars.data, review_text=form.review_text.data))
+        db.session.commit()
+        return render_template('notification.html', notice='Review posting a success! Thank you.')
+    elif not campground:
+        abort(404)
+    return render_template('leave_review.html', campground=campground, form=form)
+
+@app.route('/campground/<slug>/upload_photo', methods=['GET', 'POST'])
+@login_required
+def upload_photo(slug):
+    try:
+        campground = Campground.query.filter_by(slug=slug).first()
+    except:
+        return redirect(url_for('index', notice='Campground not found. Try our search!'))
+    form = PhotoUploadForm()
+    user = current_user
+    if form.validate_on_submit() and 'photo' in request.files:
+        try:
+            filename = photos.save(request.files['photo'], folder=slug, name=user.email+str(random.randrange(1000))+'.')
+        except UploadNotAllowed, e:
+            return render_template('notification.html', notice='That kind of file is not allowed.')
+        if filename is None:
+            abort(404)
+        
+        campground.media.append(Media(url=photos.url(filename)))
+        db.session.commit()
+
+        return redirect(url_for('view_campground', slug=slug, message='File uploaded successfully.'))
+    elif form.errors:
+        print form.errors
+        return redirect(url_for('view_campground', slug=slug, message='Invalid file.'))
+    else:
+        return render_template('upload_photo.html', campground=campground, user=user, form=form)
+
+# CLAIM & OPT IN #
+
+@app.route('/campground/<slug>/claim', methods=['GET', 'POST'])
+def claim_campground(slug):
+    form = VerificationNumberForm()
+    try:
+        user = User.query.filter_by(id=current_user.id).first()
+    except:
+        user = None
+
+    campground = Campground.query.filter_by(slug=slug).first()
+
+    if form.validate_on_submit():
+        #someone has already claimed the campground
+        if form.code.data == campground.verification_code and len(User.query.filter_by(camp_owned=campground.id).all()) != 0:
+            print User.query.filter_by(camp_owned=campground.id).all()
+            print campground.id
+
+            return render_template('notification.html', notice='Someone has already claimed this campground.')
+        #no user
+        if form.code.data == campground.verification_code and user == None:
+            return redirect(url_for('create_owner', slug=slug))
+
+        #user already logged in
+        elif form.code.data == campground.verification_code:
+            user_datastore.add_role_to_user(user, Role.query.filter_by(name='campground_owner').first())
+            user.camp_owned = campground.id
+            db.session.commit()
+            return render_template('notification.html', notice="Thank you for claiming this campground! You may now edit it, or opt in to the Roverpass program!")
+
+        #incorrect verification code
+        else:
+            return render_template('notification.html', notice='You have entered an incorrect verification code.')
+    else:
+        print 'generic'
+        return render_template('claim_campground.html', form=form, user=user, campground=campground)
+
+@app.route('/campground/<slug>/opt_in', methods=['GET', 'POST'])
+def opt_in(slug):
+    """
+    Form for opting into roverpass.
+    Prompt for verification code, then redirect to create user.
+    If user exists, add that campground to their campground owned column and go directly to opt in form.
+    After full completion toggle campground.roverpass_member to true. This will update pricing info as well on the campgrounds view page.
+    """
+    form = OptInForm(request.form)
+    print form.data
+    print request.form
+
+    try:
+        user = User.query.filter_by(email= current_user.email).first()
+    except:
+        user = None
+
+    campground = Campground.query.filter_by(slug=slug).first()
+
+    if not campground:
+        return redirect(url_for('index', message='Sorry, that campground was not found.'))
+
+    if not user or user.camp_owned != campground.id:
+        return redirect('/campground/'+slug+'/claim')
+
+    if request.method=='POST' and form.validate():
+        if not form.agree_to_terms.data:
+            return render_template('opt_in.html', user=current_user, campground=campground, form=form, message='You must agree to the terms.')
+        #if not user.has_role('campground_owner') and form.validate():
+        #    user_datastore.add_role_to_user(user, Role.query.filter_by(name='campground_owner'))
+        #    user.camp_owned = campground.id
+        #    db.session.commit()
+        #    return render_template('opt_in.html', user=user, campground=campground, form=form)
+        #perform relevant campground updates
+        campground.name = form.campground_name.data
+        campground.generate_slug()
+        campground.address = form.address.data
+        campground.city = form.city.data
+        campground.state = form.state.data
+        campground.discount_percentage = form.discount_percentage.data
+        campground.roverpass_member = True
+
+        #add additional perks; since WTForms provides no useful way of distinguishing 
+        #field types, I will simply use the fact that there are 11 preceding fields (including CSRF)
+        for field in form.data.items()[12:]:
+            if form.data[field[0]] == True:
+                perk = Perk(perk_name=field[0].replace('_', ' ').title())
+                campground.perks.append(perk)
+
+        #perform relevant user updates
+        user.signature = form.signature.data
+        user.phone_number = form.contact_phone_number.data
+
+        db.session.commit()
+
+        msg = Message(subject=str('Roverpass Opt-In Agreement Copy : '+campground.name), sender='info@roverpass.com', html=render_template('opt_in_success.html', today=datetime.today().strftime("%d %b, %Y"), form_data=form.data, user=user, campground=campground), recipients=['info@roverpass.com', user.email ])
+        with app.open_resource("/var/www/roverpass/roverpass/static/agreement/roverpass_agreement.pdf") as fp:
+            msg.attach("roverpass_agreement.pdf", "application/pdf", fp.read())
+        mail.send(msg)
+
+        return render_template('notification.html', notice='Thank you for Opting In! We have sent you a confirmation email, including a copy of the contract.')
+
+    elif request.method=='GET':
+        if not (user.has_role('campground_owner') and user.camp_owned == campground.id) or user==None:
+            form = VerificationNumberForm()
+            return render_template('claim_campground.html', user=None, form=form, campground=campground)
+
+        if current_user.has_role('campground_owner') and user.camp_owned == campground.id:
+            return render_template('opt_in.html', user=current_user, campground=campground, form=form)
+    else:
+        return render_template('opt_in.html', user=current_user, campground=campground, form=form)
+
+@app.route('/campground/<slug>/edit', methods=['GET']) #get handler: displays edit page if you have the right role & it's your campground
+@app.route('/campground/<slug>/edit/<edit_type>/<new_data>', methods=['POST']) #handles receiving and updating of new data
+@edit_campground.require()
+def edit_campground(slug, edit_type=None, new_data=None):
+    #get the campground
+    campground = Campground.query.filter_by(slug=slug).first()
+    if request.method == 'GET':
+        if current_user.camp_owned == campground.id:
+            similar = Campground.query.filter_by(state=campground.state).all()
+            similar.remove(campground)
+            return render_template('campground_edit.html', user=current_user, similar=similar, media=Media.query.filter_by(camp_id=campground.id).all(), campground=campground)
+        else:
+            return redirect(url_for('view_campground', slug=campground.slug, message='You do not have rights to edit this campground.'))
+    else:
+        if edit_type == 'website':
+            ##do it
+            campground.website = urllib.unquote(new_data)
+        if edit_type == 'price':
+            campground.price = new_data
+        if edit_type == 'name':
+            campground.name = new_data
+        if edit_type == 'address':
+            campground.address = new_data
+        if edit_type == 'state':
+            campground.state = new_data
+        db.session.commit()
+    return ''
+
+
+
+@app.route('/sales/<page>', methods=['GET', 'POST'])
+def sales(page):
+    #if not current_user.has_role('sales'):
+    #   abort(404)
+    #else:
+    num_campgrounds = Campground.query.order_by('-id').first().id
+    query = db.session.query(Campground)
+    form = SearchForm()
+
+    if request.method == 'GET':
+        num_campgrounds = Campground.query.order_by('-id').first().id
+        #display 100 campgrounds per page
+        try:
+            campgrounds = Campground.query.order_by(Campground.id).filter(Campground.id > (int(page)-1)*500).limit(500)
+            #campgrounds_opted_in = campgrounds.filter(Campground.id >= int(page)*500).filter_by(roverpass_member=True).limit(500)
+
+            return render_template('sales.html', form=form, campgrounds=campgrounds.all(), num_campgrounds=num_campgrounds)
+        except:
+            campgrounds = Campground.query.filter_by(state=str(page).title())
+            #campgrounds_opted_in = campgrounds.filter(Campground.query.filter_by(state=page)).filter_by(roverpass_member=True)
+            return render_template('sales.html', campgrounds=campgrounds.all(), num_campgrounds=num_campgrounds)
+    
+    elif request.method=='POST' and form.validate():
+        selected_perks = []
+        for perk in form:
+            print perk.data
+            if isinstance(perk.data, bool):
+                if perk.data:
+                    selected_perks.append(perk.id)
+        if form.query.data and not selected_perks:
+            results = search_campgrounds(query, form.query.data).all()
+            return render_template('sales.html', form=form, num_campgrounds=num_campgrounds, campgrounds=results)
+
+        #query and perk selection
+        if form.query.data and selected_perks:
+            results = search_campgrounds(query, form.query.data).all()
+
+            for index, result in enumerate(results):
+                for perk in selected_perks:
+                    if not perk.replace('_', ' ').title() in list(str(perk) for perk in result.perks):
+                        try:
+                            results.remove(results[index-1])
+                        except:
+                            results.pop()
+
+            return render_template('sales.html', form=form, campgrounds=results, num_campgrounds=num_campgrounds)
+    else:
+        return render_template('sales.html', form=form, campgrounds=None, num_campgrounds=num_campgrounds, message='Invalid Query')
+
+###ERROR HANDLING###
+@app.errorhandler(403)
+def permissionsRequired(error):
+    return redirect(url_for('index', message='You must own the campground to do that.'))
+
+@app.errorhandler(404)
+def pageNotFound(error):
+    return redirect(url_for('index', message='That page was not found.'))
+
+@app.errorhandler(500)
+def server_error(error):
+    return redirect(url_for('index', message='Whoops! Something went wrong. We have been notified and will fix it. Please contact us at info@roverpass.com if you have an urgent need.'))
+
+if __name__ == '__main__':
+    app.run(debug=True, host='localhost', port=5000)

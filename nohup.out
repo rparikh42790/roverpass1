@@ -1,0 +1,91 @@
+Traceback (most recent call last):
+  File "remove_duplicates.py", line 1, in <module>
+    from boiler import *
+  File "/var/www/roverpass/roverpass/boiler.py", line 9, in <module>
+    from campModels import *
+ImportError: No module named campModels
+python: can't open file 'remove_duplicate': [Errno 2] No such file or directory
+Traceback (most recent call last):
+  File "remove_duplicate_perks.py", line 4, in <module>
+    camp.perks = list(set(camp.perks))
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/attributes.py", line 233, in __get__
+    return self.impl.get(instance_state(instance), dict_)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/attributes.py", line 579, in get
+    value = self.callable_(state, passive)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/strategies.py", line 506, in _load_for_state
+    return self._emit_lazyload(session, state, ident_key, passive)
+  File "<string>", line 1, in <lambda>
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/strategies.py", line 573, in _emit_lazyload
+    result = q.all()
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2292, in all
+    return list(self)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2404, in __iter__
+    return self._execute_and_instances(context)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2419, in _execute_and_instances
+    result = conn.execute(querycontext.statement, self._params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 720, in execute
+    return meth(self, multiparams, params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/sql/elements.py", line 317, in _execute_on_connection
+    return connection._execute_clauseelement(self, multiparams, params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 817, in _execute_clauseelement
+    compiled_sql, distilled_params
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 884, in _execute_context
+    None, None)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 1108, in _handle_dbapi_exception
+    exc_info
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/util/compat.py", line 185, in raise_from_cause
+    reraise(type(exception), exception, tb=exc_tb)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 880, in _execute_context
+    context = constructor(dialect, self, conn, *args)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/default.py", line 550, in _init_compiled
+    grp, m in enumerate(parameters)]
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/sql/compiler.py", line 470, in construct_params
+    pd[self.bind_names[bindparam]] = bindparam.effective_value
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/sql/elements.py", line 1048, in effective_value
+    return self.callable()
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/strategies.py", line 421, in <lambda>
+    bind_to_col[bindparam._identifying_key])
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/mapper.py", line 2302, in _get_state_attr_by_column
+    return state.manager[prop.key].impl.get(state, dict_, passive=passive)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/attributes.py", line 577, in get
+    value = callable_(state, passive)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/state.py", line 360, in __call__
+    self.manager.deferred_scalar_loader(self, toload)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/loading.py", line 606, in load_scalar_attributes
+    only_load_props=attribute_names)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/loading.py", line 230, in load_on_ident
+    return q.one()
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2361, in one
+    ret = list(self)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2404, in __iter__
+    return self._execute_and_instances(context)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/orm/query.py", line 2419, in _execute_and_instances
+    result = conn.execute(querycontext.statement, self._params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 720, in execute
+    return meth(self, multiparams, params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/sql/elements.py", line 317, in _execute_on_connection
+    return connection._execute_clauseelement(self, multiparams, params)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 817, in _execute_clauseelement
+    compiled_sql, distilled_params
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 947, in _execute_context
+    context)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 1108, in _handle_dbapi_exception
+    exc_info
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/util/compat.py", line 185, in raise_from_cause
+    reraise(type(exception), exception, tb=exc_tb)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/base.py", line 940, in _execute_context
+    context)
+  File "/usr/local/lib/python2.7/dist-packages/sqlalchemy/engine/default.py", line 435, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.StatementError: (ProgrammingError) relation "campground" does not exist
+LINE 2: FROM campground 
+             ^
+ 'SELECT campground.id AS campground_id, campground.name AS campground_name, campground.location AS campground_location, campground.city AS campground_city, campground.description AS campground_description, campground.opt_in_date AS campground_opt_in_date, campground.roverpass_member AS campground_roverpass_member, campground.phone_number AS campground_phone_number, campground.address AS campground_address, campground.num_hookups AS campground_num_hookups, campground.discount_percentage AS campground_discount_percentage, campground.formatted_address AS campground_formatted_address, campground.state AS campground_state, campground.slug AS campground_slug, campground.price AS campground_price, campground.discount_price AS campground_discount_price, campground.website AS campground_website, campground.verification_code AS campground_verification_code, campground.background_image AS campground_background_image, campground.search_vector AS campground_search_vector \nFROM campground \nWHERE campground.id = %(param_1)s' {'param_1': 12866} (original cause: ProgrammingError: (ProgrammingError) relation "campground" does not exist
+LINE 2: FROM campground 
+             ^
+ 'SELECT campground.id AS campground_id, campground.name AS campground_name, campground.location AS campground_location, campground.city AS campground_city, campground.description AS campground_description, campground.opt_in_date AS campground_opt_in_date, campground.roverpass_member AS campground_roverpass_member, campground.phone_number AS campground_phone_number, campground.address AS campground_address, campground.num_hookups AS campground_num_hookups, campground.discount_percentage AS campground_discount_percentage, campground.formatted_address AS campground_formatted_address, campground.state AS campground_state, campground.slug AS campground_slug, campground.price AS campground_price, campground.discount_price AS campground_discount_price, campground.website AS campground_website, campground.verification_code AS campground_verification_code, campground.background_image AS campground_background_image, campground.search_vector AS campground_search_vector \nFROM campground \nWHERE campground.id = %(param_1)s' {'param_1': 12866}) u'SELECT perks.id AS perks_id, perks.perk_name AS perks_perk_name, perks.camp_id AS perks_camp_id \nFROM perks \nWHERE %(param_1)s = perks.camp_id' [immutabledict({})]
+Scrapy 0.22.2 - no active project
+
+Unknown command: crawl
+
+Use "scrapy" to see available commands
