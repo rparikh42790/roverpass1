@@ -1,7 +1,7 @@
 Flask==0.10.1
 Flask-Login==0.2.10
 Flask-OAuthlib==0.4.3
-Jinja2==2.7.2
+Jinja2==2.11.3
 MarkupSafe==0.21
 SQLAlchemy==0.9.4
 WTForms==1.0.5
