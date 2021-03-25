@@ -14,7 +14,7 @@ MarkupSafe==0.23
 PIL==1.1.7
 Pillow==2.4.0
 PyRSS2Gen==1.0.0
-PyYAML==3.10
+PyYAML==5.4
 Pygments==1.6
 SQLAlchemy==0.7.8
 Scrapy==0.22.2
