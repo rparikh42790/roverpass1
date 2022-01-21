@@ -33,7 +33,7 @@ greenlet==0.4.2
 guppy==0.1.9
 html5lib==0.999
 httplib2==0.8
-ipython==1.2.1
+ipython==7.16.3
 itsdangerous==0.24
 lxml==3.1beta1
 macholib==1.5
