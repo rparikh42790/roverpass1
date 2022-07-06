@@ -35,7 +35,7 @@ html5lib==0.999
 httplib2==0.8
 ipython==1.2.1
 itsdangerous==0.24
-lxml==3.1beta1
+lxml==4.9.1
 macholib==1.5
 mechanize==0.2.5
 modulegraph==0.10.1
