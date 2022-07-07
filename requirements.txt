@@ -54,7 +54,7 @@ pytz==2012d
 pyzmq==14.0.1
 queuelib==1.1.1
 rauth==0.6.2
-requests==1.2.3
+requests==2.20.0
 requests-oauthlib==0.4.0
 scoop==0.7.0.release
 selenium==2.29.0
