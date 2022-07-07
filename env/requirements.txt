@@ -9,7 +9,7 @@ Werkzeug==0.9.4
 beautifulsoup4==4.3.2
 itsdangerous==0.24
 oauthlib==0.6.1
-requests==2.2.1
+requests==2.20.0
 stripe==1.14.0
 wsgiref==0.1.2
 yolk==0.4.3
